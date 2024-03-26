@@ -1,0 +1,14 @@
+[package]
+name = "adb-sync"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+clap = { version = "4", features = ["derive"] }
+typed-path = "0.8"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
