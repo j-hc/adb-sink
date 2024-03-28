@@ -8,6 +8,10 @@ anyhow = { version = "1", features = ["backtrace"] }
 clap = { version = "4", features = ["derive"] }
 typed-path = "0.8"
 
+rsa = { version = "0.9.6", features = ["sha1"] }
+sha1 = "0.10"
+rusb = "0.9.3"
+
 [profile.release]
 lto = true
 strip = true
