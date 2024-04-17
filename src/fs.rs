@@ -46,7 +46,7 @@ pub trait FileSystem {
                         dirs.push(f);
                     }
                 }
-                FileMode::Symlink => panic!("symlink"),
+                FileMode::Symlink => unreachable!("symlink: '{:?}'", f),
             }
         }
         Ok((ffs, dirs))
@@ -114,7 +114,7 @@ impl FileSystem for AndroidFS {
     }
 
     fn list_dir(&mut self, path: &UnixPath) -> anyhow::Result<Vec<SyncFile>> {
-        let r = adb_cmd!("ls", path)?;
+        let r = adb_cmd!("ls", path.as_str())?;
         let mut files = Vec::with_capacity(r.lines().count());
         for line in r.lines() {
             let (s, line) = line.split_once(' ').expect("ls output no mode");
@@ -127,17 +127,18 @@ impl FileSystem for AndroidFS {
             if name == "." || name == ".." {
                 continue;
             }
-            let epoch = u32::from_str_radix(s, 16)?;
+            let timestamp = u32::from_str_radix(s, 16)?;
             let path = path.join(name);
 
             files.push(SyncFile {
                 mode: FileMode::from_u32(mode),
                 size,
-                timestamp: epoch,
+                timestamp,
                 name: name.into(),
                 path: path.into(),
             });
         }
+
         Ok(files)
     }
 
@@ -154,14 +155,12 @@ impl FileSystem for AndroidFS {
     }
 
     fn set_mtime(&mut self, path: &UnixPath, timestamp: u32) -> anyhow::Result<()> {
-        adb_shell!(
-            self.shell,
-            "touch",
-            "-m",
-            "-d",
-            ["@", &timestamp.to_string()].concat(),
-            path
-        )?;
+        // adb push already does this?
+        // let timestamp = timestamp.to_string();
+        // let mut ts = String::with_capacity(1 + timestamp.len());
+        // ts.push('@');
+        // ts.push_str(&timestamp);
+        // adb_shell!(self.shell, "touch", "-m", "-d", ts, path)?;
         Ok(())
     }
 }
@@ -216,8 +215,7 @@ impl FileSystem for LocalFS {
     }
 
     fn set_mtime(&mut self, path: &UnixPath, time: u32) -> anyhow::Result<()> {
-        let path: std::path::PathBuf = path.into();
-        let dest = File::options().write(true).open(path)?;
+        let dest = File::options().write(true).open(path.as_str())?;
         dest.set_modified(UNIX_EPOCH + Duration::from_secs(time as u64))?;
         Ok(())
     }

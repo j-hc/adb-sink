@@ -1,5 +1,5 @@
 [package]
-name = "adb-sync"
+name = "adb-sink"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,9 +10,10 @@ typed-path = "0.8"
 
 rsa = { version = "0.9.6", features = ["sha1"] }
 sha1 = "0.10"
-rusb = "0.9.3"
+rusb = { git = "https://github.com/a1ien/rusb" }
 
-[profile.release]
+[profile.release-pr]
+inherits = "release"
 lto = true
 strip = true
 codegen-units = 1

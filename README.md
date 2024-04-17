@@ -1,9 +1,9 @@
-# adb-sync-rs
+# adb-sink
 
 ```
 github.com/j-hc
 Version: 1.0
-Usage: adb-sync <COMMAND>
+Usage: adb-sink <COMMAND>
 Commands:
   pull  
   push  
@@ -11,7 +11,7 @@ Commands:
 ```
 
 ```
-Usage: adb-sync pull [OPTIONS] <SOURCE> <DEST>
+Usage: adb-sink pull [OPTIONS] <SOURCE> <DEST>
 
 Arguments:
   <SOURCE>  
