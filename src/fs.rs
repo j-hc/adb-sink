@@ -154,7 +154,7 @@ impl FileSystem for AndroidFS {
         // Ok(())
     }
 
-    fn set_mtime(&mut self, path: &UnixPath, timestamp: u32) -> anyhow::Result<()> {
+    fn set_mtime(&mut self, _path: &UnixPath, _timestamp: u32) -> anyhow::Result<()> {
         // adb push already does this?
         // let timestamp = timestamp.to_string();
         // let mut ts = String::with_capacity(1 + timestamp.len());

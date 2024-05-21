@@ -48,7 +48,7 @@ macro_rules! adb_cmd {
             Err(AdbErr::from(String::from_utf8(op.stderr).expect("utf8 output")))
         } else {
             let op = String::from_utf8(op.stdout).expect("utf8 output");
-            if op.contains("error") {
+            if op.starts_with("adb: error:") {
                 Err(AdbErr::from(op))
             } else {
                 Ok(op)
