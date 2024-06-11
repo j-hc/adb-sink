@@ -1,53 +1,14 @@
-use adb_sink::adb::AdbErr;
-use adb_sink::adb::AdbShell;
-use adb_sink::adb_cmd;
-use adb_sink::fs::AsStr;
-use adb_sink::fs::{AndroidFS, FileSystem, LocalFS, SyncFile};
-use adb_sink::log;
-use clap::{Args, Parser, Subcommand};
+use adb_sink::adb::{AdbErr, AdbShell};
+use adb_sink::args::{Cli, PullArgs, PushArgs, SubCmds};
+use adb_sink::fs::{AndroidFS, AsStr, FileSystem, LocalFS, SyncFile};
+use adb_sink::{adb_cmd, adb_cmd_q, log};
+use anyhow::Context;
+use clap::Parser;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::str::FromStr;
 use typed_path::{UnixPath, UnixPathBuf};
-
-#[derive(Args, Debug)]
-#[command(arg_required_else_help(true))]
-struct PullPushArgs {
-    source: PathBuf,
-    dest: PathBuf,
-
-    /// set modified time of files
-    #[arg(short = 't', long)]
-    set_times: bool,
-
-    /// delete files on target that does not exist in source
-    #[arg(short = 'd', long)]
-    delete_if_dne: bool,
-
-    /// ignore dirs starting with specified string
-    #[arg(short, long)]
-    ignore_dir: Vec<Box<str>>,
-}
-
-#[derive(Debug, Subcommand)]
-enum SubCmds {
-    Pull(PullPushArgs),
-    Push(PullPushArgs),
-}
-
-#[derive(Parser, Debug)]
-#[command(
-    help_template = "{author-with-newline}{about-section}Version: {version}\n{usage-heading} \
-    {usage}\n{all-args} {tab}"
-)]
-#[command(arg_required_else_help(true))]
-#[clap(version = "1.0", author = "github.com/j-hc")]
-struct Cli {
-    #[clap(subcommand)]
-    subcmd: SubCmds,
-}
 
 type DirFileMap = HashMap<UnixPathBuf, HashSet<SyncFile>>;
 fn get_dir_file_map(fs: Vec<SyncFile>, dir: &UnixPath) -> anyhow::Result<DirFileMap> {
@@ -94,16 +55,17 @@ fn adb_with_reason(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pull_push<SRC: FileSystem, DEST: FileSystem>(
     src_fs: &mut SRC,
     dest_fs: &mut DEST,
-    PullPushArgs {
-        source,
-        dest,
-        delete_if_dne,
-        ignore_dir,
-        set_times,
-    }: PullPushArgs,
+
+    source: PathBuf,
+    dest: PathBuf,
+    delete_if_dne: bool,
+    ignore_dir: Vec<Box<str>>,
+    set_times: bool,
+
     adb_command: &'static str,
 ) -> anyhow::Result<()> {
     let source_file_name = source.file_name().unwrap().to_str().unwrap().to_string();
@@ -183,7 +145,7 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
                     let mut c_name = c.name.to_string();
                     c_name.push('.');
                     c.name = c_name.into();
-                    if androidfs.get(&c).is_none() {
+                    if androidfs.contains(&c) {
                         log!("DEL (DNE): '{}'", sf_del.path.display());
                         dest_fs.rm_file(&sf_del.path)?;
                     }
@@ -223,38 +185,113 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
     Ok(())
 }
 
+fn adb_connect() -> anyhow::Result<bool> {
+    let devices = adb_cmd_q!("devices")?;
+    match devices
+        .lines()
+        .filter(|line| line.contains("\tdevice"))
+        .inspect(|line| println!("{}", line))
+        .count()
+    {
+        0 => {
+            #[cfg(feature = "mdns")]
+            if let Some((ip, port)) = mdns_discover() {
+                log!("Discovered device {} {}. Trying to connect...", ip, port);
+                if adb_cmd!("connect", format!("{}:{}", ip, port))?.starts_with("connected to") {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        1 => Ok(true),
+        n if n > 1 => anyhow::bail!("more than 1 device connected"),
+        _ => unreachable!(),
+    }
+}
+
 fn run() -> anyhow::Result<()> {
     let args = Cli::parse();
-    match adb_cmd!("devices") {
-        Ok(devices) => {
-            println!("{}\n", devices.trim());
-            if devices
-                .lines()
-                .filter(|line| line.contains("\tdevice"))
-                .count()
-                > 1
-            {
-                anyhow::bail!("more than 1 device connected");
-            }
-        }
+
+    match adb_cmd!("start-server") {
+        Ok(_) => {}
         Err(AdbErr::IO(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!("adb binary not found")
+            return anyhow::Result::Err(e).context("adb binary not found");
         }
+        Err(AdbErr::Adb(e)) if e.starts_with("* daemon not running") => {}
         Err(e) => anyhow::bail!("{}", e),
     }
+    adb_connect()?;
 
     let mut android_fs = AndroidFS {
         shell: AdbShell::new()?,
     };
     match args.subcmd {
-        SubCmds::Pull(p) => {
-            pull_push::<AndroidFS, LocalFS>(&mut android_fs, &mut LocalFS, p, "pull")?;
+        SubCmds::Pull(PullArgs {
+            source,
+            dest,
+            delete_if_dne,
+            ignore_dir,
+            set_times,
+        }) => {
+            let dest = match dest {
+                Some(dest) => dest,
+                None => std::env::current_dir().expect("could not get current dir"),
+            };
+            pull_push::<AndroidFS, LocalFS>(
+                &mut android_fs,
+                &mut LocalFS,
+                source,
+                dest,
+                delete_if_dne,
+                ignore_dir,
+                set_times,
+                "pull",
+            )?;
         }
-        SubCmds::Push(p) => {
-            pull_push::<LocalFS, AndroidFS>(&mut LocalFS, &mut android_fs, p, "push")?
+        SubCmds::Push(PushArgs {
+            source,
+            dest,
+            delete_if_dne,
+            ignore_dir,
+        }) => {
+            pull_push::<LocalFS, AndroidFS>(
+                &mut LocalFS,
+                &mut android_fs,
+                source,
+                dest,
+                delete_if_dne,
+                ignore_dir,
+                false,
+                "push",
+            )?;
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "mdns")]
+fn mdns_discover() -> Option<(std::net::Ipv4Addr, u16)> {
+    let mdns = mdns_sd::ServiceDaemon::new().expect("Failed to create daemon");
+    let receiver = mdns
+        .browse("_adb-tls-connect._tcp.local.")
+        .expect("Failed to browse");
+    let now = std::time::Instant::now();
+    while let Ok(event) = receiver.recv() {
+        match event {
+            mdns_sd::ServiceEvent::ServiceResolved(info) => {
+                let port = info.get_port();
+                let addrs = info.get_addresses_v4();
+                assert!(addrs.len() == 1);
+                return Some((**addrs.iter().next().unwrap(), port));
+            }
+            _ => {
+                if now.elapsed() > std::time::Duration::from_secs(3) {
+                    return None;
+                }
+            }
+        }
+    }
+    None
 }
 
 fn main() -> ExitCode {

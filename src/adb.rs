@@ -35,11 +35,17 @@ impl From<String> for AdbErr {
 
 #[macro_export]
 macro_rules! adb_cmd {
-    ($($arg:expr),+ $(,)?) => {(|| -> Result<String, AdbErr>{
+    ($($arg:expr),+ $(,)?) => {{
         print!("[ADB] ");
         $(print!("'{}' ", &$arg);)+
         println!();
+        $crate::adb_cmd_q!($($arg),+)
+    }}
+}
 
+#[macro_export]
+macro_rules! adb_cmd_q {
+    ($($arg:expr),+ $(,)?) => {(|| -> Result<String, AdbErr>{
         let mut op = ::std::process::Command::new("adb");
         op.stdout(::std::process::Stdio::piped()).stderr(::std::process::Stdio::piped());
         $(op.arg(&$arg);)+

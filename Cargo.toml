@@ -7,8 +7,10 @@ edition = "2021"
 anyhow = { version = "1", features = ["backtrace"] }
 clap = { version = "4", features = ["derive"] }
 typed-path = "0.8"
+mdns-sd = { version = "0.11", default-features = false, optional = true }
 
-rsa = { version = "0.9.6", features = ["sha1"] }
+# for adb usb
+rsa = { version = "0.9", features = ["sha1"] }
 sha1 = "0.10"
 rusb = { git = "https://github.com/a1ien/rusb" }
 
@@ -17,3 +19,7 @@ inherits = "release"
 lto = true
 strip = true
 codegen-units = 1
+
+[features]
+mdns = ["dep:mdns-sd"]
+default = ["mdns"]

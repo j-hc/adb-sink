@@ -1,5 +1,6 @@
 use crate::adb::AdbErr;
-use crate::{adb::AdbShell, adb_cmd, adb_shell};
+use crate::adb_cmd_q;
+use crate::{adb::AdbShell, adb_shell};
 use std::io::BufRead;
 use std::io::Write;
 use std::{
@@ -114,7 +115,7 @@ impl FileSystem for AndroidFS {
     }
 
     fn list_dir(&mut self, path: &UnixPath) -> anyhow::Result<Vec<SyncFile>> {
-        let r = adb_cmd!("ls", path.as_str())?;
+        let r = adb_cmd_q!("ls", path.as_str())?;
         let mut files = Vec::with_capacity(r.lines().count());
         for line in r.lines() {
             let (s, line) = line.split_once(' ').expect("ls output no mode");
@@ -143,13 +144,13 @@ impl FileSystem for AndroidFS {
     }
 
     fn rm_file(&mut self, _path: &UnixPath) -> anyhow::Result<()> {
-        unimplemented!("dont delete in device");
+        unimplemented!("dont delete in device for now");
         // adb_shell!(self.shell, "rm", path)?;
         // Ok(())
     }
 
     fn rm_dir(&mut self, _path: &UnixPath) -> anyhow::Result<()> {
-        unimplemented!("dont delete in device");
+        unimplemented!("dont delete in device for now");
         // adb_shell!(self.shell, "rm", "-r", path)?;
         // Ok(())
     }
@@ -220,76 +221,3 @@ impl FileSystem for LocalFS {
         Ok(())
     }
 }
-
-// #[derive(Debug)]
-// pub struct SyncFile {
-//     path: String,
-//     last_modified: Date,
-// }
-
-// #[derive(Debug, Eq, PartialEq, PartialOrd)]
-// pub struct Date {
-//     y: u16,
-//     m: u8,
-//     d: u8,
-//     h: u8,
-//     mi: u8,
-//     s: u8,
-//     ts: u32,
-// }
-// impl Date {
-//     pub const fn new(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8) -> Self {
-//         Self {
-//             y,
-//             m,
-//             d,
-//             h,
-//             mi,
-//             s,
-//             ts: Self::timestamp(y, m, d, h, mi, s),
-//         }
-//     }
-
-//     pub fn from_iso_time(s: &str) -> Self {
-//         let mut ws = s.split_ascii_whitespace();
-//         let mut dat = ws.next().unwrap().split('-');
-//         let mut tme = ws.next().unwrap().split(':');
-//         let path = ws.next().unwrap().to_string();
-//         let y = dat.next().unwrap().parse().unwrap();
-//         let m = dat.next().unwrap().parse().unwrap();
-//         let d = dat.next().unwrap().parse().unwrap();
-//         let h = tme.next().unwrap().parse().unwrap();
-//         let mi = tme.next().unwrap().parse().unwrap();
-//         let s = tme
-//             .next()
-//             .unwrap()
-//             .split('.')
-//             .next()
-//             .unwrap()
-//             .parse()
-//             .unwrap();
-//         Self::new(y, m, d, h, mi, s)
-//     }
-
-//     const fn timestamp(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8) -> u32 {
-//         const DAYS_ASOF: [u16; 12] = [31_u16, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365];
-//         let yyear = y - 1;
-//         let countleap = ((yyear / 4) - (yyear / 100) + (yyear / 400))
-//             - ((1970 / 4) - (1970 / 100) + (1970 / 400));
-
-//         let mnth = if m > 1 {
-//             let days_per_month = ((y % 4 == 0 && ((y % 100 != 0) || y % 400 == 0)) && m > 2
-//                 || m == 2 && d >= 29) as u16;
-//             (DAYS_ASOF[(m - 2) as usize] + days_per_month) as u32 * 86400
-//         } else {
-//             0
-//         };
-//         (y as u32 - 1970) * 365 * 86400
-//             + (countleap as u32 * 86400)
-//             + 0 // second
-//             + (h as u32 * 3600)
-//             + (mi as u32 * 60)
-//             + ((d - 1) as u32 * 86400)
-//             + mnth
-//     }
-// }
