@@ -1,8 +1,6 @@
+use crate::adb::AdbCmd;
 use crate::adb::AdbErr;
-use crate::adb_cmd_q;
-use crate::{adb::AdbShell, adb_shell};
-use std::io::BufRead;
-use std::io::Write;
+use crate::adb::AdbShell;
 use std::{
     fmt::Debug,
     fs::File,
@@ -22,17 +20,22 @@ pub trait AsStr {
 
 impl AsStr for UnixPath {
     fn as_str(&self) -> &str {
-        self.to_str().unwrap()
+        self.to_str().expect("path to str")
     }
 }
 
 pub trait FileSystem {
-    fn mkdir(&mut self, path: &UnixPath) -> anyhow::Result<()>;
-    fn list_dir(&mut self, path: &UnixPath) -> anyhow::Result<Vec<SyncFile>>;
-    fn rm_file(&mut self, path: &UnixPath) -> anyhow::Result<()>;
-    fn rm_dir(&mut self, path: &UnixPath) -> anyhow::Result<()>;
-    fn set_mtime(&mut self, path: &UnixPath, timestamp: u32) -> anyhow::Result<()>;
-    fn get_all_files(&mut self, path: &UnixPath) -> anyhow::Result<(Vec<SyncFile>, Vec<SyncFile>)> {
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    fn mkdir(&mut self, path: &UnixPath) -> Result<(), Self::Error>;
+    fn list_dir(&mut self, path: &UnixPath) -> Result<Vec<SyncFile>, Self::Error>;
+    fn rm_file(&mut self, path: &UnixPath) -> Result<(), Self::Error>;
+    fn rm_dir(&mut self, path: &UnixPath) -> Result<(), Self::Error>;
+    fn set_mtime(&mut self, path: &UnixPath, timestamp: u32) -> Result<(), Self::Error>;
+    fn get_all_files(
+        &mut self,
+        path: &UnixPath,
+    ) -> Result<(Vec<SyncFile>, Vec<SyncFile>), Self::Error> {
         let mut fs = self.list_dir(path)?;
         let mut ffs = Vec::with_capacity(fs.len());
         let mut dirs = Vec::new();
@@ -108,27 +111,36 @@ impl Debug for SyncFile {
     }
 }
 
+fn hex2u32(s: &str) -> u32 {
+    match u32::from_str_radix(s, 16) {
+        Ok(u) => u,
+        Err(e) => panic!("{e:?} ({s})"),
+    }
+}
+
 impl FileSystem for AndroidFS {
-    fn mkdir(&mut self, path: &UnixPath) -> anyhow::Result<()> {
-        adb_shell!(self.shell, "mkdir", "-p", path)?;
+    type Error = AdbErr;
+
+    fn mkdir(&mut self, path: &UnixPath) -> Result<(), Self::Error> {
+        self.shell.run(["mkdir", "-p", path.as_str()])?;
         Ok(())
     }
 
-    fn list_dir(&mut self, path: &UnixPath) -> anyhow::Result<Vec<SyncFile>> {
-        let r = adb_cmd_q!("ls", path.as_str())?;
-        let mut files = Vec::with_capacity(r.lines().count());
-        for line in r.lines() {
+    fn list_dir(&mut self, path: &UnixPath) -> Result<Vec<SyncFile>, Self::Error> {
+        let op = AdbCmd::run_v(["ls", path.as_str()])?;
+        let mut files = Vec::with_capacity(op.lines().count());
+        for line in op.lines() {
             let (s, line) = line.split_once(' ').expect("ls output no mode");
-            let mode = u32::from_str_radix(s, 16)?;
+            let mode = hex2u32(s);
 
             let (s, line) = line.split_once(' ').expect("ls output no size");
-            let size = u32::from_str_radix(s, 16)?;
+            let size = hex2u32(s);
 
             let (s, name) = line.split_once(' ').expect("ls output no epoch");
             if name == "." || name == ".." {
                 continue;
             }
-            let timestamp = u32::from_str_radix(s, 16)?;
+            let timestamp = hex2u32(s);
             let path = path.join(name);
 
             files.push(SyncFile {
@@ -143,19 +155,19 @@ impl FileSystem for AndroidFS {
         Ok(files)
     }
 
-    fn rm_file(&mut self, _path: &UnixPath) -> anyhow::Result<()> {
+    fn rm_file(&mut self, _path: &UnixPath) -> Result<(), Self::Error> {
         unimplemented!("dont delete in device for now");
         // adb_shell!(self.shell, "rm", path)?;
         // Ok(())
     }
 
-    fn rm_dir(&mut self, _path: &UnixPath) -> anyhow::Result<()> {
+    fn rm_dir(&mut self, _path: &UnixPath) -> Result<(), Self::Error> {
         unimplemented!("dont delete in device for now");
         // adb_shell!(self.shell, "rm", "-r", path)?;
         // Ok(())
     }
 
-    fn set_mtime(&mut self, _path: &UnixPath, _timestamp: u32) -> anyhow::Result<()> {
+    fn set_mtime(&mut self, _path: &UnixPath, _timestamp: u32) -> Result<(), Self::Error> {
         // adb push already does this?
         // let timestamp = timestamp.to_string();
         // let mut ts = String::with_capacity(1 + timestamp.len());
@@ -168,11 +180,13 @@ impl FileSystem for AndroidFS {
 
 pub struct LocalFS;
 impl FileSystem for LocalFS {
-    fn mkdir(&mut self, path: &UnixPath) -> anyhow::Result<()> {
-        Ok(std::fs::create_dir_all(path.as_str())?)
+    type Error = std::io::Error;
+
+    fn mkdir(&mut self, path: &UnixPath) -> Result<(), Self::Error> {
+        std::fs::create_dir_all(path.as_str())
     }
 
-    fn list_dir(&mut self, path: &UnixPath) -> anyhow::Result<Vec<SyncFile>> {
+    fn list_dir(&mut self, path: &UnixPath) -> Result<Vec<SyncFile>, Self::Error> {
         let mut fs = Vec::new();
         for dir in std::fs::read_dir(path.as_str())? {
             let dir = dir?;
@@ -198,7 +212,8 @@ impl FileSystem for LocalFS {
                 size,
                 timestamp: md
                     .modified()?
-                    .duration_since(SystemTime::UNIX_EPOCH)?
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("system time shouldnt error")
                     .as_secs() as u32,
                 name: name.into_boxed_str(),
                 path: path.into(),
@@ -207,15 +222,15 @@ impl FileSystem for LocalFS {
         Ok(fs)
     }
 
-    fn rm_file(&mut self, path: &UnixPath) -> anyhow::Result<()> {
-        Ok(std::fs::remove_file(path.as_str())?)
+    fn rm_file(&mut self, path: &UnixPath) -> Result<(), Self::Error> {
+        std::fs::remove_file(path.as_str())
     }
 
-    fn rm_dir(&mut self, path: &UnixPath) -> anyhow::Result<()> {
-        Ok(std::fs::remove_dir_all(path.as_str())?)
+    fn rm_dir(&mut self, path: &UnixPath) -> Result<(), Self::Error> {
+        std::fs::remove_dir_all(path.as_str())
     }
 
-    fn set_mtime(&mut self, path: &UnixPath, time: u32) -> anyhow::Result<()> {
+    fn set_mtime(&mut self, path: &UnixPath, time: u32) -> Result<(), Self::Error> {
         let dest = File::options().write(true).open(path.as_str())?;
         dest.set_modified(UNIX_EPOCH + Duration::from_secs(time as u64))?;
         Ok(())

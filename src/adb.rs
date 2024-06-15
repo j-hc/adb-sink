@@ -1,7 +1,11 @@
 use std::error::Error;
+use std::ffi::OsStr;
 use std::fmt::{Debug, Display};
+use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::process::{ChildStdin, ChildStdout};
 use std::{io, process::Command};
 
@@ -33,70 +37,19 @@ impl From<String> for AdbErr {
     }
 }
 
-#[macro_export]
-macro_rules! adb_cmd {
-    ($($arg:expr),+ $(,)?) => {{
-        print!("[ADB] ");
-        $(print!("'{}' ", &$arg);)+
-        println!();
-        $crate::adb_cmd_q!($($arg),+)
-    }}
-}
-
-#[macro_export]
-macro_rules! adb_cmd_q {
-    ($($arg:expr),+ $(,)?) => {(|| -> Result<String, AdbErr>{
-        let mut op = ::std::process::Command::new("adb");
-        op.stdout(::std::process::Stdio::piped()).stderr(::std::process::Stdio::piped());
-        $(op.arg(&$arg);)+
-        let op = op.output()?;
-        if !op.stderr.is_empty() {
-            Err(AdbErr::from(String::from_utf8(op.stderr).expect("utf8 output")))
-        } else {
-            let op = String::from_utf8(op.stdout).expect("utf8 output");
-            if op.starts_with("adb: error:") {
-                Err(AdbErr::from(op))
-            } else {
-                Ok(op)
-            }
-        }
-    })()}
-}
-
-#[macro_export]
-macro_rules! adb_shell {
-    ($shell:expr,$($arg:expr),+ $(,)?) => {(|| -> Result<String, AdbErr> {
-        print!("[ABD SHELL] ");
-        $(print!("'{}' ",&$arg);)+
-        println!();
-        macro_rules! CMD_END {() => {"ADBSYNCEND"};}
-        $(write!($shell.si, "{} ", $arg)?;)+
-        $shell.si
-            .write_all(concat!(";echo ", CMD_END!(), "\n").as_bytes())?;
-        $shell.si.flush()?;
-        let mut buf = ::std::string::String::new();
-        while {
-            $shell.so.read_line(&mut buf)?;
-            let buf = buf.trim_end();
-            if CMD_END!().len() > buf.len() {
-                true
-            } else {
-                !buf.get(buf.len() - CMD_END!().len()..)
-                    .is_some_and(|b| b == CMD_END!())
-            }
-        } {}
-        buf.truncate(buf.len() - CMD_END!().len());
-        Ok(buf)
-    })()}
-}
-
 pub struct AdbShell {
     pub si: BufWriter<ChildStdin>,
     pub so: BufReader<ChildStdout>,
 }
 
+macro_rules! CMD_END {
+    () => {
+        "ADBSYNCEND"
+    };
+}
+
 impl AdbShell {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new() -> Result<Self, AdbErr> {
         let mut c = Command::new("adb")
             .arg("shell")
             .stdin(::std::process::Stdio::piped())
@@ -107,59 +60,109 @@ impl AdbShell {
             so: BufReader::new(c.stdout.take().expect("so piped")),
         })
     }
+
+    pub fn run<I, S>(&mut self, args: I) -> Result<String, AdbErr>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        print!("[ABD SHELL] ");
+        for arg in args {
+            print!("{:?} ", &arg.as_ref());
+            self.si.write_all(arg.as_ref().as_bytes())?;
+        }
+        println!();
+        self.si
+            .write_all(concat!(";echo ", CMD_END!(), "\n").as_bytes())?;
+        self.si.flush()?;
+
+        let mut buf = ::std::string::String::new();
+        while {
+            self.so.read_line(&mut buf)?;
+            let buf = buf.trim_end();
+            if CMD_END!().len() > buf.len() {
+                true
+            } else {
+                !buf.get(buf.len() - CMD_END!().len()..)
+                    .is_some_and(|b| b == CMD_END!())
+            }
+        } {}
+        buf.truncate(buf.len() - CMD_END!().len());
+        Ok(buf)
+    }
 }
 
-// pub struct AdbCmd {
-//     cmd: Command,
-// }
+pub struct AdbCmd {
+    cmd: Command,
+}
 
-// impl AdbCmd {
-//     pub fn run<I, S>(args: I) -> Result<String, AdbErr>
-//     where
-//         I: IntoIterator<Item = S>,
-//         S: AsRef<OsStr>,
-//     {
-//         let mut cmd = Command::new("adb");
-//         cmd.stdout(::std::process::Stdio::piped())
-//             .stderr(::std::process::Stdio::piped());
-//         cmd.args(args);
-//         Self { cmd }.output()
-//     }
+impl AdbCmd {
+    pub fn run<I, S>(args: I) -> Result<String, AdbErr>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut cmd = Self::new();
+        cmd.args(args);
+        cmd.output()
+    }
 
-//     pub fn new() -> Self {
-//         let mut cmd = Command::new("adb");
-//         cmd.stdout(::std::process::Stdio::piped())
-//             .stderr(::std::process::Stdio::piped());
-//         Self { cmd }
-//     }
+    pub fn run_v<I, S>(args: I) -> Result<String, AdbErr>
+    where
+        I: IntoIterator<Item = S> + Copy,
+        S: AsRef<OsStr>,
+    {
+        let mut cmd = Self::new();
+        cmd.args(args);
+        cmd.output_v()
+    }
 
-//     pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
-//         self.cmd.arg(arg.as_ref());
-//         self
-//     }
+    pub fn new() -> Self {
+        let mut cmd = Command::new("adb");
+        cmd.stdout(::std::process::Stdio::piped())
+            .stderr(::std::process::Stdio::piped());
+        Self { cmd }
+    }
 
-//     pub fn args<I, S>(&mut self, args: I) -> &mut Self
-//     where
-//         I: IntoIterator<Item = S>,
-//         S: AsRef<OsStr>,
-//     {
-//         self.cmd.args(args);
-//         self
-//     }
+    pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
+        self.cmd.arg(arg.as_ref());
+        self
+    }
 
-//     pub fn output(&mut self) -> Result<String, AdbErr> {
-//         let op = self.cmd.output()?;
-//         if !op.stderr.is_empty() {
-//             Err(AdbErr::from(
-//                 String::from_utf8(op.stderr).expect("utf8 output"),
-//             ))
-//         } else {
-//             let op = String::from_utf8(op.stdout).expect("utf8 output");
-//             if op.contains("error") {
-//                 Err(AdbErr::from(op))
-//             } else {
-//                 Ok(op)
-//             }
-//         }
-//     }
-// }
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.cmd.args(args);
+        self
+    }
+
+    pub fn output(&mut self) -> Result<String, AdbErr> {
+        println!("[ADB] {:?}", self.cmd);
+        self._output()
+    }
+
+    pub fn output_v(&mut self) -> Result<String, AdbErr> {
+        if crate::is_verbose() {
+            println!("[ADB] {:?}", self.cmd);
+        }
+        self._output()
+    }
+
+    fn _output(&mut self) -> Result<String, AdbErr> {
+        let op = self.cmd.output()?;
+        if !op.stderr.is_empty() {
+            Err(AdbErr::from(
+                String::from_utf8(op.stderr).expect("utf8 output"),
+            ))
+        } else {
+            let op = String::from_utf8(op.stdout).expect("utf8 output");
+            if op.starts_with("adb: error:") {
+                Err(AdbErr::from(op))
+            } else {
+                Ok(op)
+            }
+        }
+    }
+}

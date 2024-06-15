@@ -1,8 +1,7 @@
-use adb_sink::adb::{AdbErr, AdbShell};
+use adb_sink::adb::{AdbCmd, AdbErr, AdbShell};
 use adb_sink::args::{Cli, PullArgs, PushArgs, SubCmds};
 use adb_sink::fs::{AndroidFS, AsStr, FileSystem, LocalFS, SyncFile};
-use adb_sink::{adb_cmd, adb_cmd_q, log};
-use anyhow::Context;
+use adb_sink::{logi, logv, VERBOSE};
 use clap::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,7 +10,7 @@ use std::str::FromStr;
 use typed_path::{UnixPath, UnixPathBuf};
 
 type DirFileMap = HashMap<UnixPathBuf, HashSet<SyncFile>>;
-fn get_dir_file_map(fs: Vec<SyncFile>, dir: &UnixPath) -> anyhow::Result<DirFileMap> {
+fn get_dir_file_map(fs: Vec<SyncFile>, dir: &UnixPath) -> DirFileMap {
     let mut dir_file_map: DirFileMap = HashMap::new();
     for f in fs {
         let mut p = f
@@ -22,37 +21,14 @@ fn get_dir_file_map(fs: Vec<SyncFile>, dir: &UnixPath) -> anyhow::Result<DirFile
         p.pop();
         dir_file_map.entry(p).or_default().insert(f);
     }
-    Ok(dir_file_map)
+    dir_file_map
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SetMtime {
     WithAdb,
     WithMtime,
     None,
-}
-
-fn adb_with_reason(
-    adb_command: &str,
-    af: &SyncFile,
-    lf_path: &UnixPath,
-    reason: &str,
-    set_mtime: SetMtime,
-    dest_fs: &mut impl FileSystem,
-) -> anyhow::Result<()> {
-    let lf_str = lf_path.as_str();
-    let af_str = af.path.as_str();
-    let op = match set_mtime {
-        SetMtime::WithAdb => adb_cmd!(adb_command, "-a", af_str, lf_str)?,
-        SetMtime::WithMtime => {
-            let op = adb_cmd!(adb_command, af_str, lf_str)?;
-            dest_fs.set_mtime(lf_path, af.timestamp)?;
-            op
-        }
-        SetMtime::None => adb_cmd!(adb_command, af_str, lf_str)?,
-    };
-    log!("{adb_command} ({reason}) {}", op.trim_end());
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67,7 +43,7 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
     set_times: bool,
 
     adb_command: &'static str,
-) -> anyhow::Result<()> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let source_file_name = source.file_name().unwrap().to_str().unwrap().to_string();
 
     let source = typed_path::PathBuf::<typed_path::NativeEncoding>::try_from(source)
@@ -81,7 +57,7 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
     if adb_command == "pull" && !PathBuf::from_str(&dest.to_string()).unwrap().exists() {
         LocalFS.mkdir(&UnixPathBuf::try_from(dest.clone()).unwrap())?;
     }
-    log!("{} -> {}\n", source.display(), dest.display());
+    logi!("{} -> {}\n", source.display(), dest.display());
 
     let mut setmtime = SetMtime::None;
     if set_times {
@@ -102,15 +78,15 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
                 .starts_with(&**g)
         })
     });
-    let dir_file_map_android = get_dir_file_map(src_files, &source)?;
+    let dir_file_map_android = get_dir_file_map(src_files, &source);
 
     let (dest_files, dest_empty_dirs) = dest_fs.get_all_files(&dest)?;
-    let mut dir_file_map_local = get_dir_file_map(dest_files, &dest)?;
+    let mut dir_file_map_local = get_dir_file_map(dest_files, &dest);
 
     for (path, androidfs) in dir_file_map_android {
         let localfs = dir_file_map_local.remove(&path);
         if ignore_dir.iter().any(|g| path.as_str().starts_with(&**g)) {
-            log!("SKIP DIR (IGNORED): {}", path.display());
+            logi!("SKIP DIR (IGNORED): {}", path.display());
             continue;
         }
         if localfs.is_none() {
@@ -119,36 +95,35 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
 
         for af in &androidfs {
             let lf = localfs.as_ref().and_then(|localfs| localfs.get(af));
-            match lf {
-                Some(lf) if af.size != lf.size => {
-                    adb_with_reason(adb_command, af, &lf.path, "SIZE", setmtime, dest_fs)?
+
+            let (lf_path, reason) = match lf {
+                Some(lf) if af.size != lf.size => (&lf.path, "SIZE"),
+                Some(lf) if af.timestamp > lf.timestamp => (&lf.path, "NEWER"),
+                Some(_) => {
+                    logv!("SKIP: '{}'", af.path.display());
+                    continue;
                 }
-                Some(lf) if af.timestamp > lf.timestamp => {
-                    adb_with_reason(adb_command, af, &lf.path, "NEWER", setmtime, dest_fs)?
-                }
-                Some(_) => (), //log!("SKIP: '{}'", af.path.display()),
-                None => adb_with_reason(
-                    adb_command,
-                    af,
-                    &dest.join(&path).join(&*af.name),
-                    "DNE",
-                    setmtime,
-                    dest_fs,
-                )?,
+                None => (&dest.join(&path).join(&*af.name).into(), "DNE"),
+            };
+
+            let mut cmd = AdbCmd::new();
+            cmd.arg(adb_command);
+            if setmtime == SetMtime::WithAdb {
+                cmd.arg("-a");
             }
+            cmd.args([af.path.as_str(), lf_path.as_str()]);
+            let op = cmd.output()?;
+            if setmtime == SetMtime::WithMtime {
+                dest_fs.set_mtime(lf_path, af.timestamp)?;
+            }
+            logi!("{adb_command} ({reason}) {}", op.trim_end());
         }
         if delete_if_dne {
             if let Some(localfs) = localfs {
                 for sf_del in localfs.difference(&androidfs) {
-                    // windows does not support file names ending with .
-                    let mut c = sf_del.clone();
-                    let mut c_name = c.name.to_string();
-                    c_name.push('.');
-                    c.name = c_name.into();
-                    if androidfs.contains(&c) {
-                        log!("DEL (DNE): '{}'", sf_del.path.display());
-                        dest_fs.rm_file(&sf_del.path)?;
-                    }
+                    // TODO: handle files ending with '.' in windows
+                    logi!("DEL (DNE): '{}'", sf_del.path.display());
+                    dest_fs.rm_file(&sf_del.path)?;
                 }
             }
         }
@@ -169,24 +144,24 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
     if delete_if_dne {
         for remaining_local in dir_file_map_local.keys() {
             let p = dest.join(remaining_local);
-            log!("DEL DIR: '{}'", p.display());
+            logi!("DEL DIR: '{}'", p.display());
             let _ = dest_fs
                 .rm_dir(&p)
-                .map_err(|e| log!("could not delete: '{}'", e));
+                .map_err(|e| logi!("could not delete: '{}'", e));
         }
         for sf_dest_dir_empty in dest_empty_dirs_hs.difference(&src_empty_dirs_hs) {
             let sf_dest_dir_empty = dest.join(sf_dest_dir_empty);
-            log!("DEL EMPTY DIR: '{}'", sf_dest_dir_empty.display());
+            logi!("DEL EMPTY DIR: '{}'", sf_dest_dir_empty.display());
             let _ = dest_fs
                 .rm_dir(&sf_dest_dir_empty)
-                .map_err(|e| log!("could not delete: '{}'", e));
+                .map_err(|e| logi!("could not delete: '{}'", e));
         }
     }
     Ok(())
 }
 
-fn adb_connect() -> anyhow::Result<bool> {
-    let devices = adb_cmd_q!("devices")?;
+fn adb_connect() -> Result<bool, AdbErr> {
+    let devices = AdbCmd::run(["devices"])?;
     match devices
         .lines()
         .filter(|line| line.contains("\tdevice"))
@@ -196,29 +171,32 @@ fn adb_connect() -> anyhow::Result<bool> {
         0 => {
             #[cfg(feature = "mdns")]
             if let Some((ip, port)) = mdns_discover() {
-                log!("Discovered device {} {}. Trying to connect...", ip, port);
-                if adb_cmd!("connect", format!("{}:{}", ip, port))?.starts_with("connected to") {
+                logi!("Discovered device {} {}. Trying to connect...", ip, port);
+                if AdbCmd::run_v(["connect", &format!("{}:{}", ip, port)])?
+                    .starts_with("connected to")
+                {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
         1 => Ok(true),
-        n if n > 1 => anyhow::bail!("more than 1 device connected"),
+        n if n > 1 => panic!("more than 1 device connected"),
         _ => unreachable!(),
     }
 }
 
-fn run() -> anyhow::Result<()> {
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
+    VERBOSE.set(args.verbose).unwrap();
 
-    match adb_cmd!("start-server") {
+    match AdbCmd::run(["start-server"]) {
         Ok(_) => {}
         Err(AdbErr::IO(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            return anyhow::Result::Err(e).context("adb binary not found");
+            panic!("adb binary not found")
         }
         Err(AdbErr::Adb(e)) if e.starts_with("* daemon not running") => {}
-        Err(e) => anyhow::bail!("{}", e),
+        Err(e) => panic!("{}", e),
     }
     adb_connect()?;
 
@@ -269,6 +247,7 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+// not using adb's mdns since its disabled in most linux distros
 #[cfg(feature = "mdns")]
 fn mdns_discover() -> Option<(std::net::Ipv4Addr, u16)> {
     let mdns = mdns_sd::ServiceDaemon::new().expect("Failed to create daemon");
@@ -299,7 +278,6 @@ fn main() -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("ERROR: {}", e);
-            eprintln!("Backtrace:\n{}", e.backtrace());
             ExitCode::FAILURE
         }
     }

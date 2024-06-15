@@ -51,4 +51,7 @@ pub enum SubCmds {
 pub struct Cli {
     #[clap(subcommand)]
     pub subcmd: SubCmds,
+
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
 }
