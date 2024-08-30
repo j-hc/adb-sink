@@ -167,14 +167,19 @@ impl FileSystem for AndroidFS {
         // Ok(())
     }
 
-    fn set_mtime(&mut self, _path: &UnixPath, _timestamp: u32) -> Result<(), Self::Error> {
+    fn set_mtime(&mut self, _path: &UnixPath, mut _timestamp: u32) -> Result<(), Self::Error> {
         // adb push already does this?
-        // let timestamp = timestamp.to_string();
-        // let mut ts = String::with_capacity(1 + timestamp.len());
+        Ok(())
+
+        // let mut ts_str_len = 1;
+        // while (timestamp > 9) {
+        //     timestamp /= 10;
+        //     ts_str_len += 1;
+        // }
+        // let mut ts = String::with_capacity(1 + ts_str_len);
         // ts.push('@');
         // ts.push_str(&timestamp);
         // adb_shell!(self.shell, "touch", "-m", "-d", ts, path)?;
-        Ok(())
     }
 }
 

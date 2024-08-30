@@ -19,6 +19,14 @@ macro_rules! logi {
 }
 
 #[macro_export]
+macro_rules! logw {
+    ($($arg:tt)*) => {{
+		print!("[WARN] ");
+        println!($($arg)*);
+    }};
+}
+
+#[macro_export]
 macro_rules! logv {
     ($($arg:tt)*) => {{
         if ::adb_sink::is_verbose() {

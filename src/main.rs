@@ -1,7 +1,7 @@
 use adb_sink::adb::{AdbCmd, AdbErr, AdbShell};
 use adb_sink::args::{Cli, PullArgs, PushArgs, SubCmds};
 use adb_sink::fs::{AndroidFS, AsStr, FileSystem, LocalFS, SyncFile};
-use adb_sink::{logi, logv, VERBOSE};
+use adb_sink::{logi, logv, logw, VERBOSE};
 use clap::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -117,6 +117,14 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
                 dest_fs.set_mtime(lf_path, af.timestamp)?;
             }
             logi!("{adb_command} ({reason}) {}", op.trim_end());
+
+            #[cfg(target_os = "windows")]
+            if af.name.ends_with('.') {
+                logw!(
+                    "Windows does not support file names ending with a dot: {}",
+                    af.name
+                );
+            }
         }
         if delete_if_dne {
             if let Some(localfs) = localfs {
