@@ -157,8 +157,13 @@ fn pull_push<SRC: FileSystem, DEST: FileSystem>(
                 .rm_dir(&p)
                 .map_err(|e| logi!("could not delete: '{}'", e));
         }
-        for sf_dest_dir_empty in dest_empty_dirs_hs.difference(&src_empty_dirs_hs) {
-            let sf_dest_dir_empty = dest.join(sf_dest_dir_empty);
+        for sf_dest_dir_empty in dest_empty_dirs_hs
+            .difference(&src_empty_dirs_hs)
+            .map(|p| dest.join(p))
+        {
+            if std::fs::read_dir(sf_dest_dir_empty.to_str().unwrap())?.next().is_some() {
+                continue;
+            }
             logi!("DEL EMPTY DIR: '{}'", sf_dest_dir_empty.display());
             let _ = dest_fs
                 .rm_dir(&sf_dest_dir_empty)
