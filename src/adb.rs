@@ -5,7 +5,6 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
 use std::process::{ChildStdin, ChildStdout};
 use std::{io, process::Command};
 
@@ -64,7 +63,7 @@ impl AdbShell {
     pub fn run<I, S>(&mut self, args: I) -> Result<String, AdbErr>
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
+        S: AsRef<str>,
     {
         print!("[ABD SHELL] ");
         for arg in args {
