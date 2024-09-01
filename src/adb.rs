@@ -151,17 +151,16 @@ impl AdbCmd {
 
     fn _output(&mut self) -> Result<String, AdbErr> {
         let op = self.cmd.output()?;
-        if !op.stderr.is_empty() {
-            Err(AdbErr::from(
-                String::from_utf8(op.stderr).expect("utf8 output"),
-            ))
+        let op = if !op.stderr.is_empty() {
+            op.stderr
         } else {
-            let op = String::from_utf8(op.stdout).expect("utf8 output");
-            if op.starts_with("adb: error:") {
-                Err(AdbErr::from(op))
-            } else {
-                Ok(op)
-            }
+            op.stdout
+        };
+        let op = String::from_utf8(op).expect("utf8 output");
+        if op.starts_with("adb: error:") {
+            Err(AdbErr::from(op))
+        } else {
+            Ok(op)
         }
     }
 }

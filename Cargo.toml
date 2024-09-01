@@ -12,6 +12,7 @@ mdns-sd = { version = "0.11", default-features = false, optional = true }
 rsa = { version = "0.9", features = ["sha1"] }
 sha1 = "0.10"
 rusb = { git = "https://github.com/a1ien/rusb" }
+chainerror = "1"
 
 [profile.release-pr]
 inherits = "release"
