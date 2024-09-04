@@ -1,13 +1,12 @@
 use adb_sink::adb::{AdbCmd, AdbErr, AdbShell};
-use adb_sink::args::{Cli, PullArgs, PushArgs, SubCmds};
+use adb_sink::args::{Cli, SubCmds};
 use adb_sink::fs::{AndroidFS, LocalFS};
-use adb_sink::VERBOSE;
-use adb_sink::{adb_connect, sink, Result};
+use adb_sink::{adb_connect, sink, CResult};
 use chainerror::Context;
 use clap::Parser;
 use std::process::ExitCode;
 
-fn run(args: Cli) -> Result<()> {
+fn run(args: Cli) -> CResult<()> {
     match AdbCmd::run_v(["start-server"]) {
         Ok(_) => {}
         Err(AdbErr::IO(e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -18,57 +17,42 @@ fn run(args: Cli) -> Result<()> {
     }
     adb_connect().annotate()?;
 
+    let mut local_fs = LocalFS;
     let mut android_fs = AndroidFS {
         shell: AdbShell::new().annotate()?,
     };
 
     match args.subcmd {
-        SubCmds::Pull(PullArgs {
-            source,
-            dest,
-            delete_if_dne,
-            ignore_dir,
-            set_times,
-        }) => {
-            let dest = match dest {
+        SubCmds::Pull(pa) => sink(
+            &mut android_fs,
+            &mut local_fs,
+            pa.source,
+            match pa.dest {
                 Some(dest) => dest,
                 None => std::env::current_dir().expect("could not get current dir"),
-            };
-            sink(
-                &mut android_fs,
-                &mut LocalFS,
-                source,
-                dest,
-                delete_if_dne,
-                ignore_dir,
-                set_times,
-            )
-            .annotate()?;
-        }
-        SubCmds::Push(PushArgs {
-            source,
-            dest,
-            delete_if_dne,
-            ignore_dir,
-        }) => {
-            sink(
-                &mut LocalFS,
-                &mut android_fs,
-                source,
-                dest,
-                delete_if_dne,
-                ignore_dir,
-                false,
-            )
-            .annotate()?;
-        }
+            },
+            pa.delete_if_dne,
+            pa.ignore_dir,
+            pa.set_times,
+        ),
+        SubCmds::Push(pa) => sink(
+            &mut local_fs,
+            &mut android_fs,
+            pa.source,
+            pa.dest,
+            pa.delete_if_dne,
+            pa.ignore_dir,
+            false,
+        ),
     }
+    .annotate()?;
     Ok(())
 }
 
 fn main() -> ExitCode {
     let args = Cli::parse();
-    VERBOSE.set(args.verbose).unwrap();
+    adb_sink::VERBOSE.set(args.verbose).unwrap();
+
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -78,3 +62,14 @@ fn main() -> ExitCode {
         }
     }
 }
+
+// sink(
+//     &mut LocalFS,
+//     &mut LocalFS,
+//     PathBuf::from_str(r"").unwrap(),
+//     PathBuf::from_str(r"").unwrap(),
+//     true,
+//     Vec::new(),
+//     false,
+// )
+// .unwrap();

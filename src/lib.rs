@@ -1,14 +1,15 @@
 pub mod adb;
 pub mod args;
 pub mod fs;
+pub mod tree;
 
 use adb::AdbCmd;
 use chainerror::Context;
-use fs::{AsStr, FSCopyFrom, FileSystem, SyncFile};
-use std::collections::{HashMap, HashSet};
+use fs::{FSCopyFrom, FileMode, FileSystem, SyncFile};
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use typed_path::{UnixPath, UnixPathBuf};
+use tree::{build_tree, diff_trees};
+use typed_path::UnixPathBuf;
 
 pub static VERBOSE: OnceLock<bool> = OnceLock::new();
 
@@ -16,7 +17,7 @@ pub fn is_verbose() -> bool {
     *VERBOSE.get().expect("set in main")
 }
 
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type CResult<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[macro_export]
 macro_rules! logi {
@@ -44,158 +45,183 @@ macro_rules! logv {
     }};
 }
 
-type DirFileMap = HashMap<UnixPathBuf, HashSet<SyncFile>>;
-fn get_dir_file_map(fs: Vec<SyncFile>, dir: &UnixPath) -> DirFileMap {
-    let mut dir_file_map: DirFileMap = HashMap::new();
-    for f in fs {
-        let mut p = f
-            .path
-            .strip_prefix(dir)
-            .expect("has the prefix")
-            .to_path_buf();
-        p.pop();
-        dir_file_map.entry(p).or_default().insert(f);
-    }
-    dir_file_map
-}
+// pub struct UnixPathBuf {
+//     inner: std::path::PathBuf,
+//     #[cfg(target_os = "windows")]
+//     cached: Option<Box<str>>,
+// }
+
+// impl UnixPathBuf {
+//     pub fn as_native(&self) -> &std::path::Path {
+//         &self.inner
+//     }
+
+//     pub fn join<P: AsRef<std::path::Path>>(&self, path: P) -> Self {
+//         Self::new(self.inner.join(path))
+//     }
+
+//     pub fn new(p: std::path::PathBuf) -> Self {
+//         Self {
+//             inner: p,
+//             #[cfg(target_os = "windows")]
+//             cached: None,
+//         }
+//     }
+
+//     #[cfg(not(target_os = "windows"))]
+//     pub fn as_unix(&self) -> Option<&str> {
+//         self.inner.to_str()
+//     }
+
+//     #[cfg(target_os = "windows")]
+//     pub fn as_unix(&self) -> Option<&str> {
+//         use std::path::{Component, MAIN_SEPARATOR};
+//         let mut buf = String::new();
+//         for c in self.inner.components() {
+//             match c {
+//                 Component::RootDir => {}
+//                 Component::CurDir => buf.push('.'),
+//                 Component::ParentDir => buf.push_str(".."),
+//                 Component::Prefix(prefix) => {
+//                     buf.push_str(prefix.as_os_str().to_str()?);
+//                     continue;
+//                 }
+//                 Component::Normal(s) => buf.push_str(s.to_str()?),
+//             }
+//             buf.push('/');
+//         }
+
+//         if !self.inner.as_os_str().encode_wide().last() == Some(MAIN_SEPARATOR as u16)
+//             && buf != "/"
+//             && buf.ends_with('/')
+//         {
+//             buf.pop(); // Pop last '/'
+//         }
+//         self.cached = Some(buf.into_boxed_str());
+//         self.cached.as_deref()
+//     }
+// }
 
 pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
     src_fs: &mut SRC,
     dest_fs: &mut DEST,
-
-    source: PathBuf,
-    dest: PathBuf,
+    src_path: PathBuf,
+    dst_path: PathBuf,
     delete_if_dne: bool,
-    ignore_dir: Vec<Box<str>>,
-    set_times: bool,
-) -> Result<()> {
-    let source_file_name = source.file_name().unwrap().to_str().unwrap().to_string();
+    ignore_dirs: Vec<Box<str>>,
+    set_time: bool,
+) -> CResult<()> {
+    let source_file_name = src_path.file_name().unwrap().to_str().unwrap().to_string();
+    let dest_file_name = dst_path.file_name().unwrap().to_str().unwrap().to_string();
 
-    let source = typed_path::PathBuf::<typed_path::NativeEncoding>::try_from(source)
+    let src_path = UnixPathBuf::try_from(src_path).unwrap();
+    let dst_path = UnixPathBuf::try_from(dst_path)
         .unwrap()
-        .with_unix_encoding();
-    let mut dest = typed_path::PathBuf::<typed_path::NativeEncoding>::try_from(dest)
-        .unwrap()
-        .with_unix_encoding();
+        .join(&source_file_name);
 
-    dest.push(source_file_name);
-    dest_fs.mkdir(&dest).annotate()?;
+    let src_root = build_tree(
+        src_fs,
+        SyncFile {
+            mode: FileMode::Dir,
+            size: 0,
+            timestamp: 0,
+            name: source_file_name.into_boxed_str(),
+            path: src_path.clone().into_boxed_path(),
+        },
+        &src_path,
+    )
+    .annotate()?;
+    let dest_root = build_tree(
+        dest_fs,
+        SyncFile {
+            mode: FileMode::Dir,
+            size: 0,
+            timestamp: 0,
+            name: dest_file_name.into_boxed_str(),
+            path: dst_path.clone().into_boxed_path(),
+        },
+        &dst_path,
+    )
+    .annotate()?;
 
-    logi!("{} -> {}\n", source.display(), dest.display());
-    let (src_files, mut src_empty_dirs) = src_fs.get_all_files(&source).annotate()?;
-    src_empty_dirs.retain(|dir| {
-        !ignore_dir.iter().any(|g| {
-            dir.path
-                .strip_prefix(&source)
-                .unwrap()
-                .as_str()
-                .starts_with(&**g)
-        })
-    });
-    let dir_file_map_src = get_dir_file_map(src_files, &source);
-
-    let (dest_files, dest_empty_dirs) = dest_fs.get_all_files(&dest).annotate()?;
-
-    let empty_dirs_hs = |empty_dirs: &[SyncFile], prefix: &UnixPath| -> HashSet<Box<UnixPath>> {
-        HashSet::from_iter(
-            empty_dirs
-                .iter()
-                .map(|p| p.path.strip_prefix(prefix).unwrap().into()),
-        )
-    };
-    let mut dest_empty_dirs_hs = empty_dirs_hs(&dest_empty_dirs, &dest);
-    let mut dir_file_map_dest = get_dir_file_map(dest_files, &dest);
-
-    for (path, src_files) in dir_file_map_src {
-        dest_empty_dirs_hs.remove(&*path);
-
-        let dest_files = dir_file_map_dest.remove(&path);
-        if ignore_dir.iter().any(|g| path.as_str().starts_with(&**g)) {
-            logi!("SKIP DIR (IGNORED): {}", path.display());
-            continue;
-        }
-        if dest_files.is_none() {
-            dest_fs.mkdir(&dest.join(&path)).annotate()?;
-        }
-
-        for af in &src_files {
-            let (lf_path, reason) = match dest_files
-                .as_ref()
-                .and_then(|dest_files| dest_files.get(af))
-            {
-                Some(lf) if af.size != lf.size => (&lf.path, "SIZE"),
-                Some(lf) if af.timestamp > lf.timestamp => (&lf.path, "NEWER"),
-                Some(_) => {
-                    logv!("SKIP: '{}'", af.path.display());
-                    continue;
-                }
-                None => (&dest.join(&path).join(&*af.name).into(), "DNE"),
-            };
-
-            logi!("- COPY ({reason}): {} -> {}", af.path, lf_path);
-            dest_fs
-                .copy(
-                    &af.path,
-                    lf_path,
-                    if set_times { Some(af.timestamp) } else { None },
-                )
-                .annotate()?;
-
-            #[cfg(target_os = "windows")]
-            if af.name.ends_with('.') {
-                logw!(
-                    "Windows does not support file names ending with a dot: {}",
-                    af.name
-                );
-            }
-        }
-        if delete_if_dne {
-            if let Some(dest_files) = dest_files {
-                for sf_del in dest_files.difference(&src_files) {
-                    // TODO: handle files ending with '.' in windows
-                    logi!("DEL (DNE): '{}'", sf_del.path.display());
-                    dest_fs.rm(&sf_del.path).annotate()?;
-                }
-            }
-        }
-    }
-
-    let src_empty_dirs_hs = empty_dirs_hs(&src_empty_dirs, &source);
-    for sf_dest_dir_empty in src_empty_dirs_hs.difference(&dest_empty_dirs_hs) {
-        let p = dest.join(sf_dest_dir_empty);
-        logi!("CRETE EMPTY DIR: '{}'", p.display());
-        dest_fs.mkdir(&p).annotate()?;
-    }
+    let (dest_doesnt_have, src_doesnt_have, both_have_files) = diff_trees(&dest_root, &src_root);
 
     if delete_if_dne {
-        for remaining_local_dir in dir_file_map_dest.keys() {
-            let p = dest.join(remaining_local_dir);
-            logi!("CLEAR DIR: '{}'", p.display());
-            dest_fs.rm_dir(&p).annotate()?;
-            dest_fs.mkdir(&p).annotate()?;
-        }
-
-        for sf_dest_dir_empty in dest_empty_dirs_hs
-            .difference(&src_empty_dirs_hs)
-            .map(|p| dest.join(p))
-        {
-            #[cfg(debug_assertions)]
-            if std::fs::read_dir(sf_dest_dir_empty.to_str().unwrap())
-                .annotate()?
-                .next()
-                .is_some()
-            {
-                unreachable!();
+        for n in &src_doesnt_have {
+            match n.sf.mode {
+                FileMode::File => {
+                    logi!("DEL FILE: '{}'", n.sf.path.display());
+                    dest_fs.rm(&n.sf.path)
+                }
+                FileMode::Dir => {
+                    logi!("DEL DIR: '{}'", n.sf.path.display());
+                    dest_fs.rm_dir(&n.sf.path)
+                }
+                FileMode::Symlink => todo!(),
             }
+            .annotate()?
+        }
+    }
 
-            logi!("DEL DIR (DNE): '{}'", sf_dest_dir_empty.display());
-            dest_fs.rm_dir(&sf_dest_dir_empty).annotate()?;
+    for n in &dest_doesnt_have {
+        let from = src_path.join(&n.strip_path);
+        let to = dst_path.join(&n.strip_path);
+        if ignore_dirs.iter().any(|g| n.strip_path.starts_with(&**g)) {
+            logi!("SKIP DIR (IGNORED): {}", from.display());
+            continue;
+        }
+        match n.sf.mode {
+            FileMode::File => {
+                logi!("COPY FILE (DNE): {} -> {}", to.display(), from.display());
+                dest_fs.copy(&from, &to, None)
+            }
+            FileMode::Dir => {
+                logi!("COPY DIR (DNE): {} -> {}", to.display(), from.display());
+                dest_fs.copy_dir(&from, &to)
+            }
+            FileMode::Symlink => todo!(),
+        }
+        .annotate()?;
+    }
+
+    for (dest_file, src_file) in &both_have_files {
+        let reason = if dest_file.size != src_file.size {
+            "SIZE"
+        } else if src_file.timestamp > dest_file.timestamp {
+            "NEWER"
+        } else {
+            logv!("SKIP: '{}'", src_file.path.display());
+            continue;
+        };
+        logi!(
+            "- COPY FILE ({reason}): {} -> {}",
+            src_file.path.display(),
+            dest_file.path.display()
+        );
+        dest_fs
+            .copy(
+                &src_file.path,
+                &dest_file.path,
+                if set_time {
+                    Some(src_file.timestamp)
+                } else {
+                    None
+                },
+            )
+            .annotate()?;
+
+        #[cfg(target_os = "windows")]
+        if af.name.ends_with('.') {
+            logw!(
+                "Windows does not support file names ending with a dot: {}",
+                src_file.name
+            );
         }
     }
     Ok(())
 }
 
-pub fn adb_connect() -> Result<bool> {
+pub fn adb_connect() -> CResult<bool> {
     let devices = AdbCmd::run_v(["devices"]).annotate()?;
     match devices
         .lines()
