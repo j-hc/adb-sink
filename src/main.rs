@@ -22,14 +22,26 @@ fn run(args: Cli) -> CResult<()> {
         shell: AdbShell::new().annotate()?,
     };
 
+    if !match &args.subcmd {
+        SubCmds::Pull(pa) => &pa.source,
+        SubCmds::Push(pa) => &pa.source,
+    }
+    .is_absolute()
+    {
+        return Err("Source path must be absolute".into());
+    }
+
     match args.subcmd {
         SubCmds::Pull(pa) => sink(
             &mut android_fs,
             &mut local_fs,
             pa.source,
             match pa.dest {
+                Some(dest) if dest == std::path::Path::new(".") => {
+                    std::env::current_dir().expect("get current dir")
+                }
                 Some(dest) => dest,
-                None => std::env::current_dir().expect("could not get current dir"),
+                None => std::env::current_dir().expect("get current dir"),
             },
             pa.delete_if_dne,
             pa.ignore_dir,
@@ -56,20 +68,29 @@ fn main() -> ExitCode {
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("ERROR: {}", e);
-            eprintln!("{:?}", e);
+            eprintln!("ERROR: {:?}", e);
             ExitCode::FAILURE
         }
     }
 }
 
-// sink(
-//     &mut LocalFS,
-//     &mut LocalFS,
-//     PathBuf::from_str(r"").unwrap(),
-//     PathBuf::from_str(r"").unwrap(),
-//     true,
-//     Vec::new(),
-//     false,
-// )
-// .unwrap();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{path::PathBuf, str::FromStr};
+
+    #[test]
+    fn it_works() {
+        adb_sink::VERBOSE.set(true).unwrap();
+        sink(
+            &mut LocalFS,
+            &mut LocalFS,
+            PathBuf::from_str(r"test-from").unwrap(),
+            PathBuf::from_str(r"test-to").unwrap(),
+            true,
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+    }
+}

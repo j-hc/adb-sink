@@ -1,5 +1,6 @@
 use crate::adb::AdbCmd;
 use crate::adb::AdbShell;
+use crate::logw;
 use crate::CResult;
 use chainerror::Context;
 use std::{
@@ -7,16 +8,7 @@ use std::{
     fs::File,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use typed_path::UnixPath;
-
-trait UnixPathExt {
-    fn as_str(&self) -> &str;
-}
-impl UnixPathExt for UnixPath {
-    fn as_str(&self) -> &str {
-        self.to_str().expect("utf-8 path")
-    }
-}
+use typed_path::Utf8UnixPath as UnixPath;
 
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
@@ -68,30 +60,18 @@ impl FileMode {
             0b100 => Self::File,
             0b010 => Self::Dir,
             0b101 => Self::Symlink,
-            _ => unreachable!("undefined file mode {}", mode),
+            _ => unreachable!("file mode? {}", mode),
         }
     }
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct SyncFile {
     pub mode: FileMode,
     pub size: u32,
     pub timestamp: u32,
     pub name: Box<str>,
     pub path: Box<UnixPath>,
-}
-
-impl Debug for SyncFile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SyncFile")
-            .field("mode", &self.mode)
-            .field("size", &self.size)
-            .field("timestamp", &self.timestamp)
-            .field("name", &self.name)
-            .field("path", &self.path.display())
-            .finish()
-    }
 }
 
 fn hex2u32(s: &str) -> u32 {
@@ -108,7 +88,7 @@ pub trait FSCopyFrom<SRC: FileSystem>: FileSystem {
     fn copy_dir(&mut self, from: &UnixPath, to: &UnixPath) -> CResult<()> {
         self.mkdir(to).annotate()?;
         for entry in self.list_dir(from).annotate()? {
-            let to_path = to.join(UnixPath::new(&entry.name.as_bytes()));
+            let to_path = to.join(&*entry.name);
             match entry.mode {
                 FileMode::File => self.copy(&entry.path, &to_path, None).annotate()?,
                 FileMode::Dir => self.copy_dir(&entry.path, &to_path).annotate()?,
@@ -122,7 +102,7 @@ pub trait FSCopyFrom<SRC: FileSystem>: FileSystem {
 impl FSCopyFrom<LocalFS> for AndroidFS {
     fn copy(&mut self, from: &UnixPath, to: &UnixPath, timestamp: Option<u32>) -> CResult<()> {
         let mut cmd = AdbCmd::new();
-        cmd.args(["push", "-z", "any", from.as_str(), to.as_str()]);
+        cmd.args(["push", from.as_str(), to.as_str()]);
         let _op = cmd.output().annotate()?;
         if let Some(timestamp) = timestamp {
             self.set_mtime(to, timestamp).annotate()?;
@@ -139,7 +119,7 @@ impl FSCopyFrom<LocalFS> for AndroidFS {
 impl FSCopyFrom<AndroidFS> for LocalFS {
     fn copy(&mut self, from: &UnixPath, to: &UnixPath, timestamp: Option<u32>) -> CResult<()> {
         let mut cmd = AdbCmd::new();
-        cmd.args(["pull", "-z", "any"]);
+        cmd.args(["pull"]);
         if timestamp.is_some() {
             cmd.arg("-a");
         }
@@ -156,8 +136,7 @@ impl FSCopyFrom<AndroidFS> for LocalFS {
 
 impl FSCopyFrom<LocalFS> for LocalFS {
     fn copy(&mut self, from: &UnixPath, to: &UnixPath, _timestamp: Option<u32>) -> CResult<()> {
-        std::fs::copy(from.as_str(), to.as_str())
-            .map_context(|_| format!("{} -> {}", from.display(), to.display()))?;
+        std::fs::copy(from.as_str(), to.as_str()).annotate()?;
         Ok(())
     }
 }
@@ -173,13 +152,13 @@ impl FileSystem for AndroidFS {
         let op = AdbCmd::run_v(["ls", path.as_str()]).annotate()?;
         let mut files = Vec::with_capacity(op.lines().count());
         for line in op.lines() {
-            let (s, line) = line.split_once(' ').expect("ls output no mode");
+            let (s, line) = line.split_once(' ').expect("ls output mode");
             let mode = hex2u32(s);
 
-            let (s, line) = line.split_once(' ').expect("ls output no size");
+            let (s, line) = line.split_once(' ').expect("ls output size");
             let size = hex2u32(s);
 
-            let (s, name) = line.split_once(' ').expect("ls output no epoch");
+            let (s, name) = line.split_once(' ').expect("ls output epoch");
             if name == "." || name == ".." {
                 continue;
             }
@@ -198,13 +177,13 @@ impl FileSystem for AndroidFS {
     }
 
     fn rm(&mut self, _path: &UnixPath) -> CResult<()> {
-        unimplemented!("dont delete in device for now");
-        // Ok(())
+        logw!("ignoring AndroidFS::rm");
+        Ok(())
     }
 
     fn rm_dir(&mut self, _path: &UnixPath) -> CResult<()> {
-        unimplemented!("dont delete in device for now");
-        // Ok(())
+        logw!("ignoring AndroidFS::rm_dir");
+        Ok(())
     }
 
     fn set_mtime(&mut self, _path: &UnixPath, mut _timestamp: u32) -> CResult<()> {
@@ -255,10 +234,10 @@ impl FileSystem for LocalFS {
                     .modified()
                     .annotate()?
                     .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("system time shouldnt error")
+                    .expect("get system time")
                     .as_secs() as u32,
                 name: name.into_boxed_str(),
-                path: path.into(),
+                path: path.into_boxed_path(),
             });
         }
         Ok(fs)

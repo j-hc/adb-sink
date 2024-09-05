@@ -14,6 +14,12 @@ chainerror = "1"
 # sha1 = "0.10"
 # rusb = { git = "https://github.com/a1ien/rusb" }
 
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
 [profile.release-pr]
 inherits = "release"
 lto = true

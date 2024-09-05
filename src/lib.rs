@@ -9,7 +9,7 @@ use fs::{FSCopyFrom, FileMode, FileSystem, SyncFile};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tree::{build_tree, diff_trees};
-use typed_path::UnixPathBuf;
+use typed_path::Utf8UnixPathBuf as UnixPathBuf;
 
 pub static VERBOSE: OnceLock<bool> = OnceLock::new();
 
@@ -45,63 +45,6 @@ macro_rules! logv {
     }};
 }
 
-// pub struct UnixPathBuf {
-//     inner: std::path::PathBuf,
-//     #[cfg(target_os = "windows")]
-//     cached: Option<Box<str>>,
-// }
-
-// impl UnixPathBuf {
-//     pub fn as_native(&self) -> &std::path::Path {
-//         &self.inner
-//     }
-
-//     pub fn join<P: AsRef<std::path::Path>>(&self, path: P) -> Self {
-//         Self::new(self.inner.join(path))
-//     }
-
-//     pub fn new(p: std::path::PathBuf) -> Self {
-//         Self {
-//             inner: p,
-//             #[cfg(target_os = "windows")]
-//             cached: None,
-//         }
-//     }
-
-//     #[cfg(not(target_os = "windows"))]
-//     pub fn as_unix(&self) -> Option<&str> {
-//         self.inner.to_str()
-//     }
-
-//     #[cfg(target_os = "windows")]
-//     pub fn as_unix(&self) -> Option<&str> {
-//         use std::path::{Component, MAIN_SEPARATOR};
-//         let mut buf = String::new();
-//         for c in self.inner.components() {
-//             match c {
-//                 Component::RootDir => {}
-//                 Component::CurDir => buf.push('.'),
-//                 Component::ParentDir => buf.push_str(".."),
-//                 Component::Prefix(prefix) => {
-//                     buf.push_str(prefix.as_os_str().to_str()?);
-//                     continue;
-//                 }
-//                 Component::Normal(s) => buf.push_str(s.to_str()?),
-//             }
-//             buf.push('/');
-//         }
-
-//         if !self.inner.as_os_str().encode_wide().last() == Some(MAIN_SEPARATOR as u16)
-//             && buf != "/"
-//             && buf.ends_with('/')
-//         {
-//             buf.pop(); // Pop last '/'
-//         }
-//         self.cached = Some(buf.into_boxed_str());
-//         self.cached.as_deref()
-//     }
-// }
-
 pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
     src_fs: &mut SRC,
     dest_fs: &mut DEST,
@@ -114,10 +57,9 @@ pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
     let source_file_name = src_path.file_name().unwrap().to_str().unwrap().to_string();
     let dest_file_name = dst_path.file_name().unwrap().to_str().unwrap().to_string();
 
-    let src_path = UnixPathBuf::try_from(src_path).unwrap();
-    let dst_path = UnixPathBuf::try_from(dst_path)
-        .unwrap()
-        .join(&source_file_name);
+    let src_path = UnixPathBuf::from(src_path.to_str().unwrap());
+    let dst_path = UnixPathBuf::from(dst_path.to_str().unwrap()).join(&source_file_name);
+    dest_fs.mkdir(&dst_path).annotate()?;
 
     let src_root = build_tree(
         src_fs,
@@ -150,11 +92,11 @@ pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
         for n in &src_doesnt_have {
             match n.sf.mode {
                 FileMode::File => {
-                    logi!("DEL FILE: '{}'", n.sf.path.display());
+                    logi!("DEL FILE: '{}'", n.sf.path);
                     dest_fs.rm(&n.sf.path)
                 }
                 FileMode::Dir => {
-                    logi!("DEL DIR: '{}'", n.sf.path.display());
+                    logi!("DEL DIR: '{}'", n.sf.path);
                     dest_fs.rm_dir(&n.sf.path)
                 }
                 FileMode::Symlink => todo!(),
@@ -167,16 +109,16 @@ pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
         let from = src_path.join(&n.strip_path);
         let to = dst_path.join(&n.strip_path);
         if ignore_dirs.iter().any(|g| n.strip_path.starts_with(&**g)) {
-            logi!("SKIP DIR (IGNORED): {}", from.display());
+            logi!("SKIP DIR (IGNORED): {}", from);
             continue;
         }
         match n.sf.mode {
             FileMode::File => {
-                logi!("COPY FILE (DNE): {} -> {}", to.display(), from.display());
+                logi!("COPY FILE (DNE): {} -> {}", to, from);
                 dest_fs.copy(&from, &to, None)
             }
             FileMode::Dir => {
-                logi!("COPY DIR (DNE): {} -> {}", to.display(), from.display());
+                logi!("COPY DIR (DNE): {} -> {}", to, from);
                 dest_fs.copy_dir(&from, &to)
             }
             FileMode::Symlink => todo!(),
@@ -190,13 +132,13 @@ pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
         } else if src_file.timestamp > dest_file.timestamp {
             "NEWER"
         } else {
-            logv!("SKIP: '{}'", src_file.path.display());
+            logv!("SKIP: '{}'", src_file.path);
             continue;
         };
         logi!(
             "- COPY FILE ({reason}): {} -> {}",
-            src_file.path.display(),
-            dest_file.path.display()
+            src_file.path,
+            dest_file.path
         );
         dest_fs
             .copy(
@@ -210,8 +152,7 @@ pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
             )
             .annotate()?;
 
-        #[cfg(target_os = "windows")]
-        if af.name.ends_with('.') {
+        if cfg!(target_os = "windows") && dest_file.name.ends_with('.') {
             logw!(
                 "Windows does not support file names ending with a dot: {}",
                 src_file.name
@@ -251,10 +192,8 @@ pub fn adb_connect() -> CResult<bool> {
 // not using adb's mdns since its disabled in most linux distros
 #[cfg(feature = "mdns")]
 fn mdns_discover() -> Option<(std::net::Ipv4Addr, u16)> {
-    let mdns = mdns_sd::ServiceDaemon::new().expect("Failed to create daemon");
-    let receiver = mdns
-        .browse("_adb-tls-connect._tcp.local.")
-        .expect("Failed to browse");
+    let mdns = mdns_sd::ServiceDaemon::new().expect("create daemon");
+    let receiver = mdns.browse("_adb-tls-connect._tcp.local.").expect("browse");
     let now = std::time::Instant::now();
     while let Ok(event) = receiver.recv() {
         match event {

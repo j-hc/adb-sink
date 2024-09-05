@@ -1,5 +1,7 @@
 # adb-sink
 
+Even better adb sync
+
 ```
 github.com/j-hc
 Version: 1.0

@@ -3,10 +3,12 @@ use crate::{
     CResult,
 };
 use chainerror::Context;
-use std::{collections::HashSet, fmt::Debug, hash::Hash};
-use typed_path::{UnixPath, UnixPathBuf};
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::hash::Hash;
+use typed_path::{Utf8UnixPath as UnixPath, Utf8UnixPathBuf as UnixPathBuf};
 
-#[derive(Eq)]
+#[derive(Eq, Debug)]
 pub struct Node {
     pub sf: SyncFile,
     pub entries: HashSet<Node>,
@@ -22,23 +24,18 @@ impl Hash for Node {
         self.strip_path.hash(state);
     }
 }
-impl Debug for Node {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Node")
-            .field("sf", &self.sf)
-            .field("entries", &self.entries)
-            .field("strip_path", &self.strip_path.display())
-            .finish()
-    }
-}
 
 impl Node {
-    pub fn new(sf: SyncFile, prefix: &UnixPath) -> Self {
-        let strip_path = sf
-            .path
-            .strip_prefix(prefix)
-            .expect("has prefix")
-            .to_path_buf();
+    /// # Safety
+    /// list_dir must have got the paths with this prefix
+    pub unsafe fn new(sf: SyncFile, prefix: &UnixPath) -> Self {
+        debug_assert!(sf.path.starts_with(prefix));
+        let strip_path = unsafe {
+            sf.path
+                .strip_prefix(prefix)
+                .unwrap_unchecked()
+                .to_path_buf()
+        };
         Self {
             sf,
             entries: HashSet::new(),
@@ -52,7 +49,7 @@ impl Node {
                 for _ in 0..depth * 2 {
                     print!("  ");
                 }
-                println!("{}", n.sf.path.display());
+                println!("{}", n.sf.path);
                 print_node_(depth + 1, &n.entries);
             }
         }
@@ -64,7 +61,7 @@ pub fn build_tree<FS: FileSystem>(fs: &mut FS, sf: SyncFile, prefix: &UnixPath) 
     fn build_tree_<FS: FileSystem>(fs: &mut FS, root: &mut Node, prefix: &UnixPath) -> CResult<()> {
         for entry in fs.list_dir(&root.sf.path).annotate()? {
             let mode = entry.mode;
-            let mut node = Node::new(entry, prefix);
+            let mut node = unsafe { Node::new(entry, prefix) };
             match mode {
                 FileMode::File => {
                     root.entries.insert(node);
@@ -73,13 +70,13 @@ pub fn build_tree<FS: FileSystem>(fs: &mut FS, sf: SyncFile, prefix: &UnixPath) 
                     build_tree_(fs, &mut node, prefix).annotate()?;
                     root.entries.insert(node);
                 }
-                FileMode::Symlink => unimplemented!("not supported for now!"),
+                FileMode::Symlink => todo!("symlinks not supported"),
             }
         }
         Ok(())
     }
 
-    let mut root = Node::new(sf, prefix);
+    let mut root = unsafe { Node::new(sf, prefix) };
     build_tree_(fs, &mut root, prefix).annotate()?;
     Ok(root)
 }
@@ -102,7 +99,7 @@ pub fn diff_trees<'n>(
         n1_doesnt_have.extend(n2.entries.difference(&n1.entries));
         n2_doesnt_have.extend(n1.entries.difference(&n2.entries));
         for n in HashSet::intersection(&n1.entries, &n2.entries) {
-            // SAFETY: i just checked their intersection so..
+            // Safety: i just checked their intersection so..
             let n1c = unsafe { n1.entries.get(n).unwrap_unchecked() };
             let n2c = unsafe { n2.entries.get(n).unwrap_unchecked() };
             if n.sf.mode == FileMode::File {
