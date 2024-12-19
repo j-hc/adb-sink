@@ -82,8 +82,8 @@ impl AdbShell {
             if CMD_END!().len() > buf.len() {
                 true
             } else {
-                !buf.get(buf.len() - CMD_END!().len()..)
-                    .is_some_and(|b| b == CMD_END!())
+                buf.get(buf.len() - CMD_END!().len()..)
+                    .is_none_or(|b| b != CMD_END!())
             }
         } {}
         buf.truncate(buf.len() - CMD_END!().len());

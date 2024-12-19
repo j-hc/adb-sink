@@ -22,13 +22,14 @@ fn run(args: Cli) -> CResult<()> {
         shell: AdbShell::new().annotate()?,
     };
 
-    if !match &args.subcmd {
-        SubCmds::Pull(pa) => &pa.source,
-        SubCmds::Push(pa) => &pa.source,
-    }
-    .is_absolute()
     {
-        return Err("Source path must be absolute".into());
+        let p = match &args.subcmd {
+            SubCmds::Pull(pa) => &pa.source,
+            SubCmds::Push(pa) => &pa.source,
+        };
+        if !(p.starts_with("/") || p.is_absolute()) {
+            return Err("Source path must be absolute".into());
+        }
     }
 
     match args.subcmd {

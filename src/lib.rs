@@ -115,6 +115,12 @@ pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
         match n.sf.mode {
             FileMode::File => {
                 logi!("COPY FILE (DNE): {} -> {}", to, from);
+                if cfg!(target_os = "windows") && n.sf.name.ends_with('.') {
+                    logw!(
+                        "Windows does not support file names ending with a dot: {}",
+                        n.sf.name
+                    );
+                }
                 dest_fs.copy(&from, &to, None)
             }
             FileMode::Dir => {
@@ -136,7 +142,7 @@ pub fn sink<SRC: FileSystem, DEST: FileSystem + FSCopyFrom<SRC>>(
             continue;
         };
         logi!(
-            "- COPY FILE ({reason}): {} -> {}",
+            "COPY FILE ({reason}): {} -> {}",
             src_file.path,
             dest_file.path
         );
