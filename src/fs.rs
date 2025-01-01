@@ -85,13 +85,13 @@ pub trait FSCopyFrom<SRC: FileSystem>: FileSystem {
     fn copy(&mut self, from: &UnixPath, to: &UnixPath, timestamp: Option<u32>) -> CResult<()>;
 
     // default is generic but slow compared to adb, doing with adb pull/push is better
-    fn copy_dir(&mut self, from: &UnixPath, to: &UnixPath) -> CResult<()> {
+    fn copy_dir(&mut self, from: &UnixPath, to: &UnixPath, timestamp: Option<u32>) -> CResult<()> {
         self.mkdir(to).annotate()?;
         for entry in self.list_dir(from).annotate()? {
             let to_path = to.join(&*entry.name);
             match entry.mode {
-                FileMode::File => self.copy(&entry.path, &to_path, None).annotate()?,
-                FileMode::Dir => self.copy_dir(&entry.path, &to_path).annotate()?,
+                FileMode::File => self.copy(&entry.path, &to_path, timestamp).annotate()?,
+                FileMode::Dir => self.copy_dir(&entry.path, &to_path, timestamp).annotate()?,
                 FileMode::Symlink => todo!(),
             }
         }
@@ -110,8 +110,8 @@ impl FSCopyFrom<LocalFS> for AndroidFS {
         Ok(())
     }
 
-    fn copy_dir(&mut self, from: &UnixPath, to: &UnixPath) -> CResult<()> {
-        <AndroidFS as FSCopyFrom<LocalFS>>::copy(self, from, to, None).annotate()?;
+    fn copy_dir(&mut self, from: &UnixPath, to: &UnixPath, timestamp: Option<u32>) -> CResult<()> {
+        <AndroidFS as FSCopyFrom<LocalFS>>::copy(self, from, to, timestamp).annotate()?;
         Ok(())
     }
 }
@@ -128,8 +128,8 @@ impl FSCopyFrom<AndroidFS> for LocalFS {
         Ok(())
     }
 
-    fn copy_dir(&mut self, from: &UnixPath, to: &UnixPath) -> CResult<()> {
-        <LocalFS as FSCopyFrom<AndroidFS>>::copy(self, from, to, None).annotate()?;
+    fn copy_dir(&mut self, from: &UnixPath, to: &UnixPath, timestamp: Option<u32>) -> CResult<()> {
+        <LocalFS as FSCopyFrom<AndroidFS>>::copy(self, from, to, timestamp).annotate()?;
         Ok(())
     }
 }
